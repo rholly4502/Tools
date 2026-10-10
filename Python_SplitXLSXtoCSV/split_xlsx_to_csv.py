@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-Split XLSX to CSV
-=================
-Tool untuk membaca file Excel (.xlsx), memilih kolom yang dibutuhkan,
-lalu split menjadi multiple file CSV berdasarkan jumlah baris per file.
+Split XLSX/XLS to CSV
+======================
+Tool untuk membaca file Excel (.xlsx atau .xls), memilih kolom yang
+dibutuhkan, lalu split menjadi multiple file CSV berdasarkan jumlah
+baris per file.
 
 Cara pakai: python split_xlsx_to_csv.py
-Script akan interaktif menanyakan:
-  1. Path file .xlsx
-  2. Kolom mana saja yang dibutuhkan
-  3. Berapa baris per 1 file CSV output
 
 Author: Hermes Agent for Rholly
 """
@@ -17,15 +14,8 @@ Author: Hermes Agent for Rholly
 import os
 import sys
 import csv
+import zipfile
 from datetime import datetime
-
-try:
-    from openpyxl import load_workbook
-except ImportError:
-    print("Error: Package 'openpyxl' belum terpasang.")
-    print("Install dengan: pip install openpyxl")
-    sys.exit(1)
-
 
 # ─── Helper: warna CLI ───
 class c:
@@ -47,27 +37,69 @@ def banner():
 
 
 def ask_file_path() -> str:
-    """Tanya path file xlsx ke user, validasi sampai benar."""
+    """Tanya path file ke user, validasi sampai benar."""
     while True:
-        path = input(f"{c.BOLD}📂 Masukkan path file .xlsx: {c.END}").strip()
+        path = input(f"{c.BOLD}📂 Masukkan path file Excel (.xlsx/.xls): {c.END}").strip()
         if not path:
             print(f"{c.WARN}  ⚠ Path tidak boleh kosong.{c.END}")
             continue
         if not os.path.isfile(path):
             print(f"{c.ERR}  ❌ File tidak ditemukan: {path}{c.END}")
             continue
-        if not path.lower().endswith(('.xlsx', '.xlsm')):
-            print(f"{c.WARN}  ⚠ File bukan .xlsx. Yakin lanjut? (y/n): {c.END}", end=' ')
+        if not path.lower().endswith(('.xlsx', '.xlsm', '.xls')):
+            print(f"{c.WARN}  ⚠ File bukan .xlsx/.xls. Yakin lanjut? (y/n): {c.END}", end=' ')
             if input().strip().lower() != 'y':
                 continue
         return os.path.abspath(path)
 
 
+def detect_format(filepath: str) -> str:
+    """Deteksi format file: 'xlsx' (zip-based) atau 'xls' (BIFF) atau 'unknown'."""
+    # Cek apakah file adalah ZIP (format xlsx sebenarnya)
+    if zipfile.is_zipfile(filepath):
+        return 'xlsx'
+    # Cek magic number untuk XLS lama (BIFF): D0 CF 11 E0
+    try:
+        with open(filepath, 'rb') as f:
+            magic = f.read(8)
+        if magic == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1':
+            return 'xls'
+    except Exception:
+        pass
+    return 'unknown'
+
+
 def read_headers(filepath: str) -> tuple:
-    """Baca file xlsx, return (workbook, worksheet, headers)."""
+    """Baca file, auto-detect format, return (data_source, headers)."""
+    fmt = detect_format(filepath)
+
+    if fmt == 'xlsx':
+        return read_xlsx(filepath)
+    elif fmt == 'xls':
+        print(f"{c.WARN}  ⚠ File terdeteksi sebagai format .xls lama (BIFF).{c.END}")
+        print(f"{c.CYAN}  → Menggunakan xlrd untuk membaca...{c.END}")
+        return read_xls(filepath)
+    else:
+        # Mungkin CSV/TSV yang di-rename, atau file corrupt
+        print(f"{c.ERR}  ❌ Format file tidak dikenali.{c.END}")
+        print(f"{c.WARN}  Tips:{c.END}")
+        print(f"    1. Buka file di Excel → Save As → .xlsx (bukan .xls)")
+        print(f"    2. Atau pastikan file tidak corrupt")
+        sys.exit(1)
+
+
+def read_xlsx(filepath: str) -> tuple:
+    """Baca file .xlsx (format zip-based) menggunakan openpyxl."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        print(f"{c.ERR}  ❌ Package 'openpyxl' belum terpasang.{c.END}")
+        print(f"  Install: pip install openpyxl")
+        sys.exit(1)
+
     wb = load_workbook(filepath, read_only=True, data_only=True)
     ws = wb.active
-    print(f"\n{c.OK}  ✓ Sheet: {ws.title} | Dimensi: {ws.dimensions}{c.END}")
+    print(f"\n{c.OK}  ✓ Sheet: {ws.title} | Dimensi: {ws.dimensions} | Format: XLSX{c.END}")
 
     headers = []
     for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
@@ -78,7 +110,54 @@ def read_headers(filepath: str) -> tuple:
         print(f"{c.ERR}  ❌ File tidak punya header (kosong?).{c.END}")
         sys.exit(1)
 
-    return wb, ws, headers
+    return wb, ws, headers, 'xlsx'
+
+
+def read_xls(filepath: str) -> tuple:
+    """Baca file .xls lama (BIFF) menggunakan xlrd."""
+    try:
+        import xlrd
+    except ImportError:
+        print(f"{c.ERR}  ❌ Package 'xlrd' belum terpasang.{c.END}")
+        print(f"  Install: pip install xlrd==2.0.1")
+        print(f"\n{c.WARN}  Atau alternatif: buka file di Excel → Save As → .xlsx{c.END}")
+        sys.exit(1)
+
+    wb = xlrd.open_workbook(filepath)
+    ws = wb.sheet_by_index(0)
+    print(f"\n{c.OK}  ✓ Sheet: {ws.name} | Baris: {ws.nrows} | Kolom: {ws.ncols} | Format: XLS{c.END}")
+
+    headers = []
+    if ws.nrows > 0:
+        headers = [str(ws.cell_value(0, i)) if ws.cell_value(0, i) else f"Col_{i+1}"
+                    for i in range(ws.ncols)]
+
+    if not headers:
+        print(f"{c.ERR}  ❌ File tidak punya header (kosong?).{c.END}")
+        sys.exit(1)
+
+    return wb, ws, headers, 'xls'
+
+
+def get_row_count(ws, fmt) -> int:
+    """Hitung total baris data berdasarkan format."""
+    if fmt == 'xlsx':
+        return ws.max_row - 1
+    else:
+        return ws.nrows - 1
+
+
+def iterate_rows(ws, selected_indices, fmt):
+    """Generator yang yield baris data sesuai format."""
+    if fmt == 'xlsx':
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            yield [str(row[i]) if i < len(row) and row[i] is not None else ''
+                   for i in selected_indices]
+    else:
+        import xlrd
+        for row_idx in range(1, ws.nrows):
+            yield [str(ws.cell_value(row_idx, i)) if ws.cell_value(row_idx, i) != '' else ''
+                   for i in selected_indices]
 
 
 def show_columns(headers: list) -> list:
@@ -152,7 +231,7 @@ def ask_output_dir(filepath: str) -> str:
     return out_dir
 
 
-def split_and_export(ws, headers, selected_indices, split_size, out_dir, base_name):
+def split_and_export(ws, headers, selected_indices, split_size, out_dir, base_name, fmt):
     """Baca data, split, dan export ke CSV."""
     total_written = 0
     file_num = 1
@@ -162,9 +241,8 @@ def split_and_export(ws, headers, selected_indices, split_size, out_dir, base_na
 
     print(f"{c.CYAN}⏳ Memproses data...{c.END}")
 
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        filtered = [str(row[i]) if i < len(row) and row[i] is not None else '' for i in selected_indices]
-        batch.append(filtered)
+    for row in iterate_rows(ws, selected_indices, fmt):
+        batch.append(row)
 
         if len(batch) >= split_size:
             fname = f"{base_name}_part{file_num:03d}_{timestamp}.csv"
@@ -175,7 +253,6 @@ def split_and_export(ws, headers, selected_indices, split_size, out_dir, base_na
             batch = []
             file_num += 1
 
-    # Sisa baris terakhir
     if batch:
         fname = f"{base_name}_part{file_num:03d}_{timestamp}.csv"
         fpath = os.path.join(out_dir, fname)
@@ -201,14 +278,14 @@ def main():
     filepath = ask_file_path()
     base_name = os.path.splitext(os.path.basename(filepath))[0]
 
-    # 2. Baca xlsx dan tampilkan kolom
-    wb, ws, headers = read_headers(filepath)
+    # 2. Auto-detect format & baca headers
+    wb, ws, headers, fmt = read_headers(filepath)
 
     # 3. Tanya kolom mana yang dibutuhkan
     selected_indices = show_columns(headers)
 
     # 4. Hitung total baris data
-    total_rows = ws.max_row - 1
+    total_rows = get_row_count(ws, fmt)
     if total_rows <= 0:
         print(f"{c.ERR}  ❌ Tidak ada baris data.{c.END}")
         sys.exit(1)
@@ -222,7 +299,7 @@ def main():
     # 7. Proses split & export
     print(f"\n{c.BOLD}🚀 Mulai proses split...{c.END}\n")
     total_written, file_count = split_and_export(
-        ws, headers, selected_indices, split_size, out_dir, base_name
+        ws, headers, selected_indices, split_size, out_dir, base_name, fmt
     )
 
     # 8. Summary
@@ -233,7 +310,8 @@ def main():
     print(f"  📂 Lokasi:      {out_dir}")
     print(f"══════════════════════════════════════{c.END}\n")
 
-    wb.close()
+    if hasattr(wb, 'close'):
+        wb.close()
 
 
 if __name__ == '__main__':
