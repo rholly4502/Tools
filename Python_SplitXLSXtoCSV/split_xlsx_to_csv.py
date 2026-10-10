@@ -99,7 +99,7 @@ def read_xlsx(filepath: str) -> tuple:
 
     wb = load_workbook(filepath, read_only=True, data_only=True)
     ws = wb.active
-    print(f"\n{c.OK}  ✓ Sheet: {ws.title} | Dimensi: {ws.dimensions} | Format: XLSX{c.END}")
+    print(f"\n{c.OK}  ✓ Sheet: {ws.title} | Format: XLSX{c.END}")
 
     headers = []
     for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
