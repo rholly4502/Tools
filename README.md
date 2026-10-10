@@ -2,15 +2,15 @@
 
 Kumpulan tool/script utility untuk pekerjaan sehari-hari.
 
-## Scripts
+## Python
 
-### split_xlsx_to_csv.py
+### Python_SplitXLSXtoCSV
 Tool interaktif untuk membaca file Excel (.xlsx), memilih kolom yang dibutuhkan, lalu split menjadi multiple file CSV berdasarkan jumlah baris per file.
 
 **Cara pakai:**
 ```bash
 pip install openpyxl
-python split_xlsx_to_csv.py
+python Python_SplitXLSXtoCSV/split_xlsx_to_csv.py
 ```
 
 **Fitur:**
