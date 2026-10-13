@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Split XLSX/XLS to CSV
-======================
-Tool untuk membaca file Excel (.xlsx atau .xls), memilih kolom yang
-dibutuhkan, lalu split menjadi multiple file CSV berdasarkan jumlah
-baris per file.
+Split XLSX to CSV — Multi-Sheet Edition
+========================================
+Baca file Excel (.xlsx), tiap sheet jadi CSV terpisah.
+Pilih sheet mana yang di-export, pilih kolom per sheet.
 
 Cara pakai: python split_xlsx_to_csv.py
 
@@ -15,7 +14,6 @@ import os
 import sys
 import csv
 import zipfile
-from datetime import datetime
 
 # ─── Helper: warna CLI ───
 class c:
@@ -30,14 +28,13 @@ class c:
 
 def banner():
     print(f"""
-{c.CYAN}{c.BOLD}╔══════════════════════════════════════════╗
-║   Split XLSX to CSV — Interactive Tool   ║
-╚══════════════════════════════════════════╝{c.END}
+{c.CYAN}{c.BOLD}╔══════════════════════════════════════════════╗
+║   Split XLSX to CSV — Multi-Sheet Edition    ║
+╚══════════════════════════════════════════════╝{c.END}
 """)
 
 
 def ask_file_path() -> str:
-    """Tanya path file ke user, validasi sampai benar."""
     while True:
         path = input(f"{c.BOLD}📂 Masukkan path file Excel (.xlsx/.xls): {c.END}").strip()
         if not path:
@@ -54,11 +51,8 @@ def ask_file_path() -> str:
 
 
 def detect_format(filepath: str) -> str:
-    """Deteksi format file: 'xlsx' (zip-based) atau 'xls' (BIFF) atau 'unknown'."""
-    # Cek apakah file adalah ZIP (format xlsx sebenarnya)
     if zipfile.is_zipfile(filepath):
         return 'xlsx'
-    # Cek magic number untuk XLS lama (BIFF): D0 CF 11 E0
     try:
         with open(filepath, 'rb') as f:
             magic = f.read(8)
@@ -69,203 +63,247 @@ def detect_format(filepath: str) -> str:
     return 'unknown'
 
 
-def read_headers(filepath: str) -> tuple:
-    """Baca file, auto-detect format, return (data_source, headers)."""
+def load_workbook_all(filepath: str):
+    """Load workbook, return (wb, format, sheet_names)."""
     fmt = detect_format(filepath)
 
     if fmt == 'xlsx':
-        return read_xlsx(filepath)
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            print(f"{c.ERR}  ❌ Package 'openpyxl' belum terpasang. Install: pip install openpyxl{c.END}")
+            sys.exit(1)
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        return wb, 'xlsx', wb.sheetnames
+
     elif fmt == 'xls':
-        print(f"{c.WARN}  ⚠ File terdeteksi sebagai format .xls lama (BIFF).{c.END}")
-        print(f"{c.CYAN}  → Menggunakan xlrd untuk membaca...{c.END}")
-        return read_xls(filepath)
+        try:
+            import xlrd
+        except ImportError:
+            print(f"{c.ERR}  ❌ Package 'xlrd' belum terpasang. Install: pip install xlrd{c.END}")
+            sys.exit(1)
+        wb = xlrd.open_workbook(filepath)
+        return wb, 'xls', wb.sheet_names()
+
     else:
-        # Mungkin CSV/TSV yang di-rename, atau file corrupt
         print(f"{c.ERR}  ❌ Format file tidak dikenali.{c.END}")
-        print(f"{c.WARN}  Tips:{c.END}")
-        print(f"    1. Buka file di Excel → Save As → .xlsx (bukan .xls)")
-        print(f"    2. Atau pastikan file tidak corrupt")
         sys.exit(1)
 
 
-def read_xlsx(filepath: str) -> tuple:
-    """Baca file .xlsx (format zip-based) menggunakan openpyxl."""
-    try:
-        from openpyxl import load_workbook
-    except ImportError:
-        print(f"{c.ERR}  ❌ Package 'openpyxl' belum terpasang.{c.END}")
-        print(f"  Install: pip install openpyxl")
-        sys.exit(1)
-
-    wb = load_workbook(filepath, read_only=True, data_only=True)
-    ws = wb.active
-    print(f"\n{c.OK}  ✓ Sheet: {ws.title} | Format: XLSX{c.END}")
-
-    headers = []
-    for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
-        headers = [str(cell) if cell is not None else f"Col_{i+1}" for i, cell in enumerate(row)]
-        break
-
-    if not headers:
-        print(f"{c.ERR}  ❌ File tidak punya header (kosong?).{c.END}")
-        sys.exit(1)
-
-    return wb, ws, headers, 'xlsx'
+def get_sheet_info(wb, fmt, sheet_names):
+    """Return list of (name, rows, cols) per sheet."""
+    info = []
+    for name in sheet_names:
+        if fmt == 'xlsx':
+            ws = wb[name]
+            rows = ws.max_row or 0
+            cols = ws.max_column or 0
+        else:  # xls
+            ws = wb.sheet_by_name(name)
+            rows = ws.nrows
+            cols = ws.ncols
+        info.append((name, rows, cols))
+    return info
 
 
-def read_xls(filepath: str) -> tuple:
-    """Baca file .xls lama (BIFF) menggunakan xlrd."""
-    try:
-        import xlrd
-    except ImportError:
-        print(f"{c.ERR}  ❌ Package 'xlrd' belum terpasang.{c.END}")
-        print(f"  Install: pip install xlrd==2.0.1")
-        print(f"\n{c.WARN}  Atau alternatif: buka file di Excel → Save As → .xlsx{c.END}")
-        sys.exit(1)
+def select_sheets(sheet_info):
+    """Tampilkan daftar sheet, user pilih mana yang di-export."""
+    print(f"\n{c.BOLD}📋 Daftar Sheet:{c.END}")
+    for i, (name, rows, cols) in enumerate(sheet_info):
+        print(f"  {c.CYAN}[{i}]{c.END} {name}  ({rows:,} baris × {cols} kolom)")
 
-    wb = xlrd.open_workbook(filepath)
-    ws = wb.sheet_by_index(0)
-    print(f"\n{c.OK}  ✓ Sheet: {ws.name} | Baris: {ws.nrows} | Kolom: {ws.ncols} | Format: XLS{c.END}")
-
-    headers = []
-    if ws.nrows > 0:
-        headers = [str(ws.cell_value(0, i)) if ws.cell_value(0, i) else f"Col_{i+1}"
-                    for i in range(ws.ncols)]
-
-    if not headers:
-        print(f"{c.ERR}  ❌ File tidak punya header (kosong?).{c.END}")
-        sys.exit(1)
-
-    return wb, ws, headers, 'xls'
-
-
-def get_row_count(ws, fmt) -> int:
-    """Hitung total baris data berdasarkan format."""
-    if fmt == 'xlsx':
-        return ws.max_row - 1
-    else:
-        return ws.nrows - 1
-
-
-def iterate_rows(ws, selected_indices, fmt):
-    """Generator yang yield baris data sesuai format."""
-    if fmt == 'xlsx':
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            yield [str(row[i]) if i < len(row) and row[i] is not None else ''
-                   for i in selected_indices]
-    else:
-        import xlrd
-        for row_idx in range(1, ws.nrows):
-            yield [str(ws.cell_value(row_idx, i)) if ws.cell_value(row_idx, i) != '' else ''
-                   for i in selected_indices]
-
-
-def show_columns(headers: list) -> list:
-    """Tampilkan semua kolom, biarkan user pilih mana yang dipakai."""
-    print(f"\n{c.BOLD}📋 Kolom yang tersedia:{c.END}\n")
-    for i, h in enumerate(headers, 1):
-        print(f"  {c.CYAN}{i:>3}.{c.END} {h}")
-    print()
+    print(f"\n  {c.CYAN}all{c.END} = semua sheet")
+    print(f"  {c.CYAN}0,2,4{c.END} = sheet tertentu (comma-separated)")
+    print(f"  {c.CYAN}0-3{c.END} = range sheet")
 
     while True:
-        inp = input(
-            f"{c.BOLD}Pilih kolom (pisahkan dengan koma, contoh: 1,3,5 "
-            f"atau ketik 'all' untuk semua): {c.END}"
-        ).strip()
+        choice = input(f"\n{c.BOLD}Pilih sheet (default: all): {c.END}").strip()
+        if not choice or choice.lower() == 'all':
+            return list(range(len(sheet_info)))
 
-        if inp.lower() == 'all':
+        indices = set()
+        for part in choice.split(','):
+            part = part.strip()
+            if '-' in part:
+                try:
+                    a, b = part.split('-')
+                    for n in range(int(a), int(b) + 1):
+                        if 0 <= n < len(sheet_info):
+                            indices.add(n)
+                except ValueError:
+                    pass
+            else:
+                try:
+                    n = int(part)
+                    if 0 <= n < len(sheet_info):
+                        indices.add(n)
+                except ValueError:
+                    pass
+
+        if indices:
+            return sorted(indices)
+        print(f"{c.WARN}  ⚠ Input tidak valid.{c.END}")
+
+
+def get_headers(wb, fmt, sheet_name):
+    """Baca header row dari sheet."""
+    if fmt == 'xlsx':
+        ws = wb[sheet_name]
+        for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+            return [str(cell) if cell is not None else f"Col_{i+1}" for i, cell in enumerate(row)]
+        return []
+    else:
+        ws = wb.sheet_by_name(sheet_name)
+        if ws.nrows == 0:
+            return []
+        return [str(ws.cell_value(0, i)) if ws.cell_value(0, i) != '' else f"Col_{i+1}"
+                for i in range(ws.ncols)]
+
+
+def show_columns(headers, sheet_name):
+    """Tampilkan kolom, user pilih mana yang di-export."""
+    print(f"\n{c.BOLD}📋 Sheet: {sheet_name} — {len(headers)} kolom:{c.END}")
+    for i, h in enumerate(headers):
+        print(f"  {c.CYAN}[{i}]{c.END} {h}")
+
+    print(f"\n  {c.CYAN}all{c.END} = semua kolom")
+    print(f"  {c.CYAN}0,2,4{c.END} = kolom tertentu")
+    print(f"  {c.CYAN}0-3{c.END} = range kolom")
+    print(f"  {c.CYAN}skip{c.END} = lewati sheet ini")
+
+    while True:
+        choice = input(f"{c.BOLD}Pilih kolom (default: all): {c.END}").strip()
+        if choice.lower() == 'skip':
+            return None
+        if not choice or choice.lower() == 'all':
             return list(range(len(headers)))
 
-        try:
-            indices = [int(x.strip()) - 1 for x in inp.split(',')]
-            if all(0 <= i < len(headers) for i in indices):
-                selected = [(i, headers[i]) for i in indices]
-                print(f"\n{c.OK}  ✓ Kolom terpilih:{c.END}")
-                for i, name in selected:
-                    print(f"    {c.CYAN}{i+1}.{c.END} {name}")
-                print()
-                return indices
+        indices = set()
+        for part in choice.split(','):
+            part = part.strip()
+            if '-' in part:
+                try:
+                    a, b = part.split('-')
+                    for n in range(int(a), int(b) + 1):
+                        if 0 <= n < len(headers):
+                            indices.add(n)
+                except ValueError:
+                    pass
             else:
-                print(f"{c.ERR}  ❌ Nomor kolom di luar range.{c.END}")
-        except ValueError:
-            print(f"{c.ERR}  ❌ Format salah. Gunakan angka dipisah koma, contoh: 1,3,5{c.END}")
+                try:
+                    n = int(part)
+                    if 0 <= n < len(headers):
+                        indices.add(n)
+                except ValueError:
+                    pass
+
+        if indices:
+            return sorted(indices)
+        print(f"{c.WARN}  ⚠ Input tidak valid.{c.END}")
 
 
 def ask_split_size(total_rows: int) -> int:
-    """Tanya berapa baris per file CSV."""
-    print(f"{c.BOLD}📊 Total baris data: {total_rows}{c.END}\n")
+    """Tanya user mau split per berapa baris. 0 = tidak split."""
+    print(f"\n{c.BOLD}📊 Total baris: {total_rows:,}{c.END}")
+    print(f"  {c.CYAN}0{c.END} = export semua ke 1 file CSV")
+    print(f"  {c.CYAN}10000{c.END} = split per 10.000 baris")
+
     while True:
-        inp = input(
-            f"{c.BOLD}Split menjadi berapa baris per file? "
-            f"(contoh: 1000, atau ketik 'all' untuk 1 file): {c.END}"
-        ).strip()
-
-        if inp.lower() == 'all':
-            return total_rows
-
+        val = input(f"{c.BOLD}Split per berapa baris? (default: 0): {c.END}").strip()
+        if not val:
+            return 0
         try:
-            size = int(inp)
-            if size <= 0:
-                print(f"{c.ERR}  ❌ Harus angka positif.{c.END}")
-                continue
-            files_count = (total_rows + size - 1) // size
-            print(f"\n{c.CYAN}  → Akan menghasilkan {files_count} file CSV "
-                  f"({size} baris/file){c.END}\n")
-            confirm = input(f"{c.BOLD}  Lanjut? (y/n): {c.END}").strip().lower()
-            if confirm == 'y':
-                return size
+            n = int(val)
+            if n >= 0:
+                return n
         except ValueError:
-            print(f"{c.ERR}  ❌ Masukkan angka yang valid.{c.END}")
+            pass
+        print(f"{c.WARN}  ⚠ Input tidak valid.{c.END}")
 
 
 def ask_output_dir(filepath: str) -> str:
-    """Tanya direktori output untuk file CSV."""
-    default_dir = os.path.join(os.path.dirname(filepath), "output_csv")
-    inp = input(
-        f"\n{c.BOLD}📁 Direktori output "
-        f"(Enter untuk default: {default_dir}): {c.END}"
-    ).strip()
-    out_dir = inp if inp else default_dir
-    os.makedirs(out_dir, exist_ok=True)
-    print(f"{c.OK}  ✓ Output: {out_dir}{c.END}\n")
-    return out_dir
+    """Default output dir = same folder as input file."""
+    default = os.path.dirname(filepath)
+    val = input(f"{c.BOLD}📂 Output folder (default: {default}): {c.END}").strip()
+    out = val if val else default
+    os.makedirs(out, exist_ok=True)
+    return out
 
 
-def split_and_export(ws, headers, selected_indices, split_size, out_dir, base_name, fmt):
-    """Baca data, split, dan export ke CSV."""
-    total_written = 0
-    file_num = 1
-    batch = []
-    selected_headers = [headers[i] for i in selected_indices]
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+def sanitize_filename(name: str) -> str:
+    """Bersihkan nama untuk filesystem."""
+    return name.replace('/', '_').replace('\\', '_').replace(' ', '_').replace(':', '')
 
-    print(f"{c.CYAN}⏳ Memproses data...{c.END}")
 
-    for row in iterate_rows(ws, selected_indices, fmt):
-        batch.append(row)
+def export_sheet_to_csv(wb, fmt, sheet_name, headers, col_indices,
+                        split_size, out_dir, base_name):
+    """Export satu sheet ke CSV file(s)."""
+    selected = [headers[i] for i in col_indices]
 
-        if len(batch) >= split_size:
-            fname = f"{base_name}_part{file_num:03d}_{timestamp}.csv"
-            fpath = os.path.join(out_dir, fname)
-            _write_csv(fpath, selected_headers, batch)
-            total_written += len(batch)
-            print(f"  {c.OK}✓ {fname} ({len(batch)} rows){c.END}")
-            batch = []
-            file_num += 1
-
-    if batch:
-        fname = f"{base_name}_part{file_num:03d}_{timestamp}.csv"
+    if split_size == 0:
+        # Single file
+        fname = f"{base_name}_{sanitize_filename(sheet_name)}.csv"
         fpath = os.path.join(out_dir, fname)
-        _write_csv(fpath, selected_headers, batch)
-        total_written += len(batch)
-        print(f"  {c.OK}✓ {fname} ({len(batch)} rows){c.END}")
+        row_count = _write_single(wb, fmt, sheet_name, col_indices, selected, fpath)
+        print(f"  {c.OK}✓ {fname} ({row_count:,} baris){c.END}")
+        return [(fname, row_count)]
 
-    return total_written, file_num
+    # Split per N rows
+    files = []
+    part = 0
+    row_count = 0
+    current_rows = []
+
+    for row in _iter_data_rows(wb, fmt, sheet_name, col_indices):
+        current_rows.append(row)
+        row_count += 1
+        if len(current_rows) >= split_size:
+            fname = f"{base_name}_{sanitize_filename(sheet_name)}_part{part+1}.csv"
+            fpath = os.path.join(out_dir, fname)
+            _write_csv(fpath, selected, current_rows)
+            print(f"  {c.OK}✓ {fname} ({len(current_rows):,} baris){c.END}")
+            files.append((fname, len(current_rows)))
+            current_rows = []
+            part += 1
+
+    # Sisa
+    if current_rows:
+        fname = f"{base_name}_{sanitize_filename(sheet_name)}_part{part+1}.csv"
+        fpath = os.path.join(out_dir, fname)
+        _write_csv(fpath, selected, current_rows)
+        print(f"  {c.OK}✓ {fname} ({len(current_rows):,} baris){c.END}")
+        files.append((fname, len(current_rows)))
+
+    return files
 
 
-def _write_csv(filepath, headers, rows):
-    """Tulis satu file CSV dengan BOM (utf-8-sig) agar Excel bisa baca."""
-    with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
+def _iter_data_rows(wb, fmt, sheet_name, col_indices):
+    """Yield data rows (skip header) as list of selected column values."""
+    if fmt == 'xlsx':
+        ws = wb[sheet_name]
+        for i, row in enumerate(ws.iter_rows(min_row=2, values_only=True)):
+            yield [row[idx] if idx < len(row) else '' for idx in col_indices]
+    else:
+        ws = wb.sheet_by_name(sheet_name)
+        for r in range(1, ws.nrows):
+            yield [ws.cell_value(r, idx) for idx in col_indices]
+
+
+def _write_single(wb, fmt, sheet_name, col_indices, headers, fpath):
+    """Write all rows to a single CSV."""
+    with open(fpath, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        count = 0
+        for row in _iter_data_rows(wb, fmt, sheet_name, col_indices):
+            writer.writerow(row)
+            count += 1
+    return count
+
+
+def _write_csv(fpath, headers, rows):
+    """Write rows to CSV file."""
+    with open(fpath, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         writer.writerows(rows)
@@ -274,52 +312,67 @@ def _write_csv(filepath, headers, rows):
 def main():
     banner()
 
-    # 1. Tanya path file
+    # 1. File path
     filepath = ask_file_path()
     base_name = os.path.splitext(os.path.basename(filepath))[0]
 
-    # 2. Auto-detect format & baca headers
-    wb, ws, headers, fmt = read_headers(filepath)
+    # 2. Load workbook + detect format
+    wb, fmt, sheet_names = load_workbook_all(filepath)
+    print(f"\n{c.OK}  ✓ Format: {fmt.upper()} | {len(sheet_names)} sheet{c.END}")
 
-    # 3. Tanya kolom mana yang dibutuhkan
-    selected_indices = show_columns(headers)
+    # 3. Get sheet info (rows × cols)
+    sheet_info = get_sheet_info(wb, fmt, sheet_names)
 
-    # 4. Hitung total baris data
-    total_rows = get_row_count(ws, fmt)
-    if total_rows <= 0:
-        print(f"{c.ERR}  ❌ Tidak ada baris data.{c.END}")
-        sys.exit(1)
+    # 4. Select sheets
+    selected_sheets = select_sheets(sheet_info)
 
-    # 5. Tanya split size
-    split_size = ask_split_size(total_rows)
-
-    # 6. Tanya direktori output
+    # 5. Output dir
     out_dir = ask_output_dir(filepath)
 
-    # 7. Proses split & export
-    print(f"\n{c.BOLD}🚀 Mulai proses split...{c.END}\n")
-    total_written, file_count = split_and_export(
-        ws, headers, selected_indices, split_size, out_dir, base_name, fmt
-    )
+    # 6. Per-sheet: select columns + split size + export
+    print(f"\n{c.BOLD}{'═'*50}{c.END}")
+    print(f"{c.BOLD}  Memproses {len(selected_sheets)} sheet...{c.END}")
+    print(f"{c.BOLD}{'═'*50}{c.END}")
 
-    # 8. Summary
-    print(f"\n{c.OK}{c.BOLD}══════════════════════════════════════")
-    print(f"  ✅ SELESAI!")
-    print(f"  📊 Total baris: {total_written}")
-    print(f"  📁 Total file:  {file_count}")
-    print(f"  📂 Lokasi:      {out_dir}")
-    print(f"══════════════════════════════════════{c.END}\n")
+    all_results = []
 
-    if hasattr(wb, 'close'):
-        wb.close()
+    for idx in selected_sheets:
+        sheet_name = sheet_info[idx][0]
+        total_rows = sheet_info[idx][1]
+        print(f"\n{c.CYAN}{c.BOLD}── Sheet [{idx}]: {sheet_name} ({total_rows:,} baris) ──{c.END}")
+
+        # Headers
+        headers = get_headers(wb, fmt, sheet_name)
+        if not headers:
+            print(f"  {c.WARN}⚠ Sheet kosong, skip.{c.END}")
+            continue
+
+        # Select columns
+        col_indices = show_columns(headers, sheet_name)
+        if col_indices is None:
+            print(f"  {c.WARN}⏭ Sheet dilewati.{c.END}")
+            continue
+
+        # Split size
+        split_size = ask_split_size(total_rows)
+
+        # Export
+        results = export_sheet_to_csv(wb, fmt, sheet_name, headers, col_indices,
+                                       split_size, out_dir, base_name)
+        all_results.extend(results)
+
+    # 7. Summary
+    print(f"\n{c.BOLD}{'═'*50}{c.END}")
+    print(f"{c.OK}{c.BOLD}  Selesai! {len(all_results)} file CSV dibuat:{c.END}")
+    print(f"{c.BOLD}{'═'*50}{c.END}")
+    for fname, rows in all_results:
+        print(f"  📄 {fname}  ({rows:,} baris)")
+    print(f"\n{c.CYAN}  Folder: {out_dir}{c.END}\n")
 
 
 if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        print(f"\n{c.WARN}Dibatalkan oleh user.{c.END}")
+        print(f"\n{c.WARN}  ⏹ Dibatalkan.{c.END}")
         sys.exit(0)
-    except Exception as e:
-        print(f"\n{c.ERR}Error: {e}{c.END}")
-        sys.exit(1)
